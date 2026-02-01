@@ -91,6 +91,7 @@ class ScaleFactory @Inject constructor(
         SoehnleHandler(),
         SinocareHandler(),
         SenssunHandler(),
+        SenssunIFB7Handler(),
         RenphoHandler(),
         QNHandler(),
         OneByoneHandler(),
