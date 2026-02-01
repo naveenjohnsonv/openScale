@@ -89,7 +89,7 @@ class SenssunIFB7Handler : ScaleDeviceHandler() {
             val finalMeasurement = ScaleMeasurement().apply {
                 weight = weightKg
                 if (impedanceRaw > 0) {
-                    impedance = impedanceRaw.toFloat()
+                    impedance = impedanceRaw.toDouble()
                 }
             }
             publish(finalMeasurement)
