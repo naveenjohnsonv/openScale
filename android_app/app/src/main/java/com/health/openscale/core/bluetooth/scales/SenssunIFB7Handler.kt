@@ -20,9 +20,10 @@ import com.health.openscale.core.utils.LogManager
  * Rebranded as Moving Life BS 161, etc.
  *
  * Protocol:
- * Manufacturer ID: 0x8500
- * Byte Layout:
- * [0..8]  Header/MAC
+ * Manufacturer ID: 0x8500 (Often parsed as 0x0085 by Android due to Endianness)
+ * Byte Layout (relative to data start):
+ * [0..2]  Header (02 03 11)
+ * [3..8]  MAC Address
  * [9]     Separator (0x01)
  * [10-11] Weight (Big Endian, /100)
  * [12-13] Impedance (Big Endian)
@@ -32,12 +33,11 @@ class SenssunIFB7Handler : ScaleDeviceHandler() {
 
     companion object {
         private const val TAG = "SenssunIFB7Handler"
-        private const val MANUFACTURER_ID = 0x8500
     }
 
     override fun supportFor(device: ScannedDeviceInfo): DeviceSupport? {
         val name = device.name?.uppercase() ?: ""
-        // Matches "IF_B7" or similar variations
+        // Matches "IF_B7"
         if (name.startsWith("IF_B7")) {
             return DeviceSupport(
                 displayName = "Senssun / Moving Life (IF_B7)",
@@ -56,15 +56,32 @@ class SenssunIFB7Handler : ScaleDeviceHandler() {
     }
 
     override fun onAdvertisement(scanResult: ScanResult, user: ScaleUser): BroadcastAction {
-        val manufacturerData = scanResult.scanRecord?.getManufacturerSpecificData(MANUFACTURER_ID)
-            ?: return BroadcastAction.IGNORED
+        val scanRecord = scanResult.scanRecord ?: return BroadcastAction.IGNORED
+        val msd = scanRecord.manufacturerSpecificData ?: return BroadcastAction.IGNORED
 
-        // Minimum length check (15 bytes based on your logs)
-        if (manufacturerData.size < 15) return BroadcastAction.IGNORED
+        var manufacturerData: ByteArray? = null
+
+        // iterate through all manufacturer data to find the one with our header
+        // This solves the 0x8500 vs 0x0085 endianness issue
+        for (i in 0 until msd.size()) {
+            val bytes = msd.valueAt(i)
+            // Check for the Fixed Header: 02 03 11
+            if (bytes != null && bytes.size >= 15 &&
+                bytes[0] == 0x02.toByte() &&
+                bytes[1] == 0x03.toByte() &&
+                bytes[2] == 0x11.toByte()) {
+                manufacturerData = bytes
+                break
+            }
+        }
+
+        if (manufacturerData == null) {
+            return BroadcastAction.IGNORED
+        }
 
         // Byte 14 is Status. 0xA1 indicates stable/valid.
+        // We mask with 0xA0 to catch both 0xA1 and similar stable states
         val status = manufacturerData[14].toInt() and 0xFF
-        // We look for 0xA0 mask (0xA1 matches 0xA0)
         val isStable = (status and 0xA0) == 0xA0
 
         // Parse Weight: Bytes 10 & 11 (Big Endian)
@@ -74,13 +91,13 @@ class SenssunIFB7Handler : ScaleDeviceHandler() {
         // Parse Impedance: Bytes 12 & 13 (Big Endian)
         val impedanceRaw = ((manufacturerData[12].toInt() and 0xFF) shl 8) or (manufacturerData[13].toInt() and 0xFF)
 
-        // Debug logging
-        // LogManager.d(TAG, "IF_B7 Raw: W=$weightKg Imp=$impedanceRaw Stable=$isStable")
+        // Debug logging to verify data reception in Logcat
+        // LogManager.d(TAG, "Parsing: W=$weightKg kg, Imp=$impedanceRaw, Stable=$isStable")
 
         // 1. If not stable, update the live view but keep scanning
         if (!isStable && weightKg > 0) {
             val liveMeasurement = ScaleMeasurement().apply { weight = weightKg }
-            publish(liveMeasurement) // Updates the UI number
+            publish(liveMeasurement) 
             return BroadcastAction.CONSUMED_KEEP_SCANNING
         }
 
@@ -89,7 +106,7 @@ class SenssunIFB7Handler : ScaleDeviceHandler() {
             val finalMeasurement = ScaleMeasurement().apply {
                 weight = weightKg
                 if (impedanceRaw > 0) {
-                    impedance = impedanceRaw.toDouble()
+                    impedance = impedanceRaw.toDouble() 
                 }
             }
             publish(finalMeasurement)
