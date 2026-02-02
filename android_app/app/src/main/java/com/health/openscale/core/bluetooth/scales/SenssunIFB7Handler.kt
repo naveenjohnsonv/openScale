@@ -12,6 +12,7 @@ package com.health.openscale.core.bluetooth.scales
 import android.bluetooth.le.ScanResult
 import com.health.openscale.core.bluetooth.data.ScaleMeasurement
 import com.health.openscale.core.bluetooth.data.ScaleUser
+import com.health.openscale.core.bluetooth.libs.TrisaBodyAnalyzeLib
 import com.health.openscale.core.service.ScannedDeviceInfo
 import com.health.openscale.core.utils.LogManager
 
@@ -21,7 +22,7 @@ import com.health.openscale.core.utils.LogManager
  *
  * Protocol:
  * Manufacturer ID: 0x8500 (Often parsed as 0x0085 by Android due to Endianness)
- * Byte Layout (relative to data start):
+ * Byte Layout:
  * [0..2]  Header (02 03 11)
  * [3..8]  MAC Address
  * [9]     Separator (0x01)
@@ -61,11 +62,9 @@ class SenssunIFB7Handler : ScaleDeviceHandler() {
 
         var manufacturerData: ByteArray? = null
 
-        // iterate through all manufacturer data to find the one with our header
-        // This solves the 0x8500 vs 0x0085 endianness issue
+        // Iterate to find the header 02 03 11
         for (i in 0 until msd.size()) {
             val bytes = msd.valueAt(i)
-            // Check for the Fixed Header: 02 03 11
             if (bytes != null && bytes.size >= 15 &&
                 bytes[0] == 0x02.toByte() &&
                 bytes[1] == 0x03.toByte() &&
@@ -80,7 +79,6 @@ class SenssunIFB7Handler : ScaleDeviceHandler() {
         }
 
         // Byte 14 is Status. 0xA1 indicates stable/valid.
-        // We mask with 0xA0 to catch both 0xA1 and similar stable states
         val status = manufacturerData[14].toInt() and 0xFF
         val isStable = (status and 0xA0) == 0xA0
 
@@ -91,21 +89,42 @@ class SenssunIFB7Handler : ScaleDeviceHandler() {
         // Parse Impedance: Bytes 12 & 13 (Big Endian)
         val impedanceRaw = ((manufacturerData[12].toInt() and 0xFF) shl 8) or (manufacturerData[13].toInt() and 0xFF)
 
-        // 1. If not stable, update the live view but keep scanning
+        // 1. If UNSTABLE: Do not publish to DB, just return scanning status
         if (!isStable && weightKg > 0) {
-            LogManager.d(TAG, "Live (Unstable): $weightKg kg - waiting for lock...")
+            LogManager.d(TAG, "Live: $weightKg kg (Imp: $impedanceRaw)")
             return BroadcastAction.CONSUMED_KEEP_SCANNING
         }
 
-        // 2. If stable, publish final result and STOP scanning
+        // 2. If STABLE: Calculate Body Comp and Publish
         if (isStable && weightKg > 0) {
             val finalMeasurement = ScaleMeasurement().apply {
                 weight = weightKg
+
+                // ONLY calculate if we have valid impedance (Barefoot)
                 if (impedanceRaw > 0) {
-                    impedance = impedanceRaw.toDouble() 
+                    impedance = impedanceRaw.toDouble()
+
+                    // Use TrisaBodyAnalyzeLib available in the project
+                    // Sex: 1=Male, 0=Female
+                    val sexInt = if (user.gender.isMale()) 1 else 0
+                    val lib = TrisaBodyAnalyzeLib(sexInt, user.age, user.bodyHeight)
+                    
+                    val impFloat = impedanceRaw.toFloat()
+
+                    // Calculate metrics using the library
+                    fat = lib.getFat(weightKg, impFloat)
+                    water = lib.getWater(weightKg, impFloat)
+                    muscle = lib.getMuscle(weightKg, impFloat)
+                    bone = lib.getBone(weightKg, impFloat)
+                    
+                    // Simple LBM calculation: Weight - Fat Mass
+                    val fatMass = weightKg * (fat / 100.0f)
+                    lbm = weightKg - fatMass
                 }
             }
+
             publish(finalMeasurement)
+            LogManager.i(TAG, "Stable Final: $weightKg kg, Fat: ${finalMeasurement.fat}%")
             return BroadcastAction.CONSUMED_STOP
         }
 
