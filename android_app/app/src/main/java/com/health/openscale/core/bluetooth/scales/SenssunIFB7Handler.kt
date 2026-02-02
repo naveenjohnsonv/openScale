@@ -91,13 +91,9 @@ class SenssunIFB7Handler : ScaleDeviceHandler() {
         // Parse Impedance: Bytes 12 & 13 (Big Endian)
         val impedanceRaw = ((manufacturerData[12].toInt() and 0xFF) shl 8) or (manufacturerData[13].toInt() and 0xFF)
 
-        // Debug logging to verify data reception in Logcat
-        // LogManager.d(TAG, "Parsing: W=$weightKg kg, Imp=$impedanceRaw, Stable=$isStable")
-
         // 1. If not stable, update the live view but keep scanning
         if (!isStable && weightKg > 0) {
-            val liveMeasurement = ScaleMeasurement().apply { weight = weightKg }
-            publish(liveMeasurement) 
+            LogManager.d(TAG, "Live (Unstable): $weightKg kg - waiting for lock...")
             return BroadcastAction.CONSUMED_KEEP_SCANNING
         }
 
