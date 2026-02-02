@@ -30,15 +30,16 @@ import com.health.openscale.core.utils.LogManager
  * [12-13] Impedance (Big Endian)
  * [14]    Status (0xA1 = Stable)
  */
+
 class SenssunIFB7Handler : ScaleDeviceHandler() {
 
-    companion object {
-        private const val TAG = "SenssunIFB7Handler"
-    }
+    private val TAG = "SenssunIFB7Handler"
+    
+    private val IMPEDANCE_WAIT_TIMEOUT_MS = 3000L
+    private var firstStableTimestamp: Long = 0L
 
     override fun supportFor(device: ScannedDeviceInfo): DeviceSupport? {
         val name = device.name?.uppercase() ?: ""
-        // Matches "IF_B7"
         if (name.startsWith("IF_B7")) {
             return DeviceSupport(
                 displayName = "Senssun / Moving Life (IF_B7)",
@@ -62,7 +63,7 @@ class SenssunIFB7Handler : ScaleDeviceHandler() {
 
         var manufacturerData: ByteArray? = null
 
-        // Iterate to find the header 02 03 11
+        // Header: 02 03 11
         for (i in 0 until msd.size()) {
             val bytes = msd.valueAt(i)
             if (bytes != null && bytes.size >= 15 &&
@@ -78,40 +79,36 @@ class SenssunIFB7Handler : ScaleDeviceHandler() {
             return BroadcastAction.IGNORED
         }
 
-        // Byte 14 is Status. 0xA1 indicates stable/valid.
+        // Byte 14: Status (0xA1 = Stable)
         val status = manufacturerData[14].toInt() and 0xFF
         val isStable = (status and 0xA0) == 0xA0
 
-        // Parse Weight: Bytes 10 & 11 (Big Endian)
+        // Bytes 10-11: Weight
         val weightRaw = ((manufacturerData[10].toInt() and 0xFF) shl 8) or (manufacturerData[11].toInt() and 0xFF)
         val weightKg = weightRaw / 100.0f
 
-        // Parse Impedance: Bytes 12 & 13 (Big Endian)
+        // Bytes 12-13: Impedance
         val impedanceRaw = ((manufacturerData[12].toInt() and 0xFF) shl 8) or (manufacturerData[13].toInt() and 0xFF)
 
-        // -------------------------------------------------
-        // Logic Flow
-        // -------------------------------------------------
-
-        // 1. If Unstable: Just reset timer and keep scanning
+        // 1. Unstable: Reset timer, update live UI (optional), keep scanning
         if (!isStable) {
-            firstStableTimestamp = 0 
-            // We don't publish live values here to prevent DB spam in Broadcast mode
-            // unless you want a visual update, but BroadcastAdapter treats publish as save.
+            firstStableTimestamp = 0L
+            if (weightKg > 0) {
+                 // Uncomment to see live numbers updating, but do NOT call publish() here
+                 // to avoid saving unstable values to DB.
+                 // LogManager.d(TAG, "Live: $weightKg kg")
+            }
             return BroadcastAction.CONSUMED_KEEP_SCANNING
         }
 
-        // 2. If Stable AND we have Impedance: Success!
+        // 2. Stable + Valid Impedance: Success immediately
         if (impedanceRaw > 0) {
             publishFinalMeasurement(weightKg, impedanceRaw, user)
             LogManager.i(TAG, "Success: Weight + Impedance found.")
             return BroadcastAction.CONSUMED_STOP
         }
 
-        // 3. If Stable but NO Impedance (0):
-        //    We wait up to 3 seconds. The scale might be calculating.
-        //    If 3 seconds pass, we assume user is wearing socks and save weight only.
-        
+        // 3. Stable but No Impedance (0): Wait for it...
         if (firstStableTimestamp == 0L) {
             firstStableTimestamp = System.currentTimeMillis()
         }
@@ -119,13 +116,12 @@ class SenssunIFB7Handler : ScaleDeviceHandler() {
         val elapsed = System.currentTimeMillis() - firstStableTimestamp
 
         if (elapsed > IMPEDANCE_WAIT_TIMEOUT_MS) {
-            // Timeout reached. User is likely wearing socks. Save Weight only.
+            // Timed out waiting for impedance (User wearing socks?) -> Save Weight Only
             publishFinalMeasurement(weightKg, 0, user)
             LogManager.w(TAG, "Timeout waiting for impedance. Saving Weight only.")
             return BroadcastAction.CONSUMED_STOP
         }
 
-        // Keep scanning, waiting for that impedance packet...
         LogManager.d(TAG, "Stable weight ($weightKg) waiting for impedance... (${elapsed}ms)")
         return BroadcastAction.CONSUMED_KEEP_SCANNING
     }
@@ -137,7 +133,7 @@ class SenssunIFB7Handler : ScaleDeviceHandler() {
             if (impedance > 0) {
                 this.impedance = impedance.toDouble()
                 
-                // Calculate Body Composition
+                // Calculate Body Composition using Trisa lib
                 val sexInt = if (user.gender.isMale()) 1 else 0
                 val lib = TrisaBodyAnalyzeLib(sexInt, user.age, user.bodyHeight)
                 val impFloat = impedance.toFloat()
