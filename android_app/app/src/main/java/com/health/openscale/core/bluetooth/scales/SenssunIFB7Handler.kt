@@ -89,45 +89,69 @@ class SenssunIFB7Handler : ScaleDeviceHandler() {
         // Parse Impedance: Bytes 12 & 13 (Big Endian)
         val impedanceRaw = ((manufacturerData[12].toInt() and 0xFF) shl 8) or (manufacturerData[13].toInt() and 0xFF)
 
-        // 1. If UNSTABLE: Do not publish to DB, just return scanning status
-        if (!isStable && weightKg > 0) {
-            LogManager.d(TAG, "Live: $weightKg kg (Imp: $impedanceRaw)")
+        // -------------------------------------------------
+        // Logic Flow
+        // -------------------------------------------------
+
+        // 1. If Unstable: Just reset timer and keep scanning
+        if (!isStable) {
+            firstStableTimestamp = 0 
+            // We don't publish live values here to prevent DB spam in Broadcast mode
+            // unless you want a visual update, but BroadcastAdapter treats publish as save.
             return BroadcastAction.CONSUMED_KEEP_SCANNING
         }
 
-        // 2. If STABLE: Calculate Body Comp and Publish
-        if (isStable && weightKg > 0) {
-            val finalMeasurement = ScaleMeasurement().apply {
-                weight = weightKg
-
-                // ONLY calculate if we have valid impedance (Barefoot)
-                if (impedanceRaw > 0) {
-                    impedance = impedanceRaw.toDouble()
-
-                    // Use TrisaBodyAnalyzeLib available in the project
-                    // Sex: 1=Male, 0=Female
-                    val sexInt = if (user.gender.isMale()) 1 else 0
-                    val lib = TrisaBodyAnalyzeLib(sexInt, user.age, user.bodyHeight)
-                    
-                    val impFloat = impedanceRaw.toFloat()
-
-                    // Calculate metrics using the library
-                    fat = lib.getFat(weightKg, impFloat)
-                    water = lib.getWater(weightKg, impFloat)
-                    muscle = lib.getMuscle(weightKg, impFloat)
-                    bone = lib.getBone(weightKg, impFloat)
-                    
-                    // Simple LBM calculation: Weight - Fat Mass
-                    val fatMass = weightKg * (fat / 100.0f)
-                    lbm = weightKg - fatMass
-                }
-            }
-
-            publish(finalMeasurement)
-            LogManager.i(TAG, "Stable Final: $weightKg kg, Fat: ${finalMeasurement.fat}%")
+        // 2. If Stable AND we have Impedance: Success!
+        if (impedanceRaw > 0) {
+            publishFinalMeasurement(weightKg, impedanceRaw, user)
+            LogManager.i(TAG, "Success: Weight + Impedance found.")
             return BroadcastAction.CONSUMED_STOP
         }
 
-        return BroadcastAction.IGNORED
+        // 3. If Stable but NO Impedance (0):
+        //    We wait up to 3 seconds. The scale might be calculating.
+        //    If 3 seconds pass, we assume user is wearing socks and save weight only.
+        
+        if (firstStableTimestamp == 0L) {
+            firstStableTimestamp = System.currentTimeMillis()
+        }
+
+        val elapsed = System.currentTimeMillis() - firstStableTimestamp
+
+        if (elapsed > IMPEDANCE_WAIT_TIMEOUT_MS) {
+            // Timeout reached. User is likely wearing socks. Save Weight only.
+            publishFinalMeasurement(weightKg, 0, user)
+            LogManager.w(TAG, "Timeout waiting for impedance. Saving Weight only.")
+            return BroadcastAction.CONSUMED_STOP
+        }
+
+        // Keep scanning, waiting for that impedance packet...
+        LogManager.d(TAG, "Stable weight ($weightKg) waiting for impedance... (${elapsed}ms)")
+        return BroadcastAction.CONSUMED_KEEP_SCANNING
+    }
+
+    private fun publishFinalMeasurement(weight: Float, impedance: Int, user: ScaleUser) {
+        val m = ScaleMeasurement().apply {
+            this.weight = weight
+            
+            if (impedance > 0) {
+                this.impedance = impedance.toDouble()
+                
+                // Calculate Body Composition
+                val sexInt = if (user.gender.isMale()) 1 else 0
+                val lib = TrisaBodyAnalyzeLib(sexInt, user.age, user.bodyHeight)
+                val impFloat = impedance.toFloat()
+
+                fat = lib.getFat(weight, impFloat)
+                water = lib.getWater(weight, impFloat)
+                muscle = lib.getMuscle(weight, impFloat)
+                bone = lib.getBone(weight, impFloat)
+                
+                // Simple LBM calculation
+                val fatMass = weight * (fat / 100.0f)
+                lbm = weight - fatMass
+            }
+        }
+        publish(m)
     }
 }
