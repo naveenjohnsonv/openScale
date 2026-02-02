@@ -32,9 +32,6 @@ import com.health.openscale.core.utils.LogManager
  */
 
 class SenssunIFB7Handler : ScaleDeviceHandler() {
-
-    private val TAG = "SenssunIFB7Handler"
-    
     private val IMPEDANCE_WAIT_TIMEOUT_MS = 3000L
     private var firstStableTimestamp: Long = 0L
 
