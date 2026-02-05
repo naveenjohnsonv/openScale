@@ -48,7 +48,7 @@ import com.health.openscale.core.bluetooth.scales.RenphoES26BBHandler
 import com.health.openscale.core.bluetooth.scales.RenphoHandler
 import com.health.openscale.core.bluetooth.scales.SanitasSbf72Handler
 import com.health.openscale.core.bluetooth.scales.SenssunHandler
-import com.health.openscale.core.bluetooth.scales.SenssunIFB7Handler
+import com.health.openscale.core.bluetooth.scales.HealthSenseBS161Handler
 import com.health.openscale.core.bluetooth.scales.SinocareHandler
 import com.health.openscale.core.bluetooth.scales.SoehnleHandler
 import com.health.openscale.core.bluetooth.scales.SppScaleAdapter
@@ -92,7 +92,7 @@ class ScaleFactory @Inject constructor(
         SoehnleHandler(),
         SinocareHandler(),
         SenssunHandler(),
-        SenssunIFB7Handler(),
+        HealthSenseBS161Handler(),
         RenphoHandler(),
         QNHandler(),
         OneByoneHandler(),
